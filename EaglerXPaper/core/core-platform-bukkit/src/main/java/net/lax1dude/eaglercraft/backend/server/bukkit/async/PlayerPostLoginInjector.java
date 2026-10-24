@@ -42,6 +42,8 @@ import java.util.function.Consumer;
 import net.lax1dude.eaglercraft.backend.server.api.bukkit.compat.AuthlibCompat;
 import net.lax1dude.eaglercraft.backend.server.api.bukkit.event.PlayerLoginPostEvent;
 import net.lax1dude.eaglercraft.backend.server.base.pipeline.NOPDummyHandler;
+import net.lax1dude.eaglercraft.backend.server.adapter.PipelineAttributes;
+import net.lax1dude.eaglercraft.backend.server.base.NettyPipelineData;
 import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitUnsafe;
 import net.lax1dude.eaglercraft.backend.server.bukkit.NmsNames;
 import net.lax1dude.eaglercraft.backend.server.bukkit.PlatformPluginBukkit;
@@ -610,6 +612,16 @@ public class PlayerPostLoginInjector {
             }
             return this.loginListenerProxy.createProxy(this.loginListenerCtor, ctorArgs, (obj, meth, args) -> {
                 if (this.loginListenerTick.equals(meth)) {
+                    if (!this.applyEaglerProfileUUID(loginListener, ctx)) {
+                        // Do not let Bukkit create a player with an offline UUID if
+                        // an authenticated Eagler profile UUID could not be applied.
+                        try {
+                            ctx.channel.close();
+                        }
+                        catch (Throwable ignored) {
+                        }
+                        return null;
+                    }
                     if (this.setupInboundMethod == null) {
                         ctx.markThrowOnLoginSuccess(true);
                         try {
@@ -749,6 +761,62 @@ public class PlayerPostLoginInjector {
             }
             throw new RuntimeException("wrapLoginListener failed", e);
         }
+    }
+
+    private boolean applyEaglerProfileUUID(Object loginListener, LoginEventContext ctx) {
+        if (this.loginListenerGameProfile == null || ctx == null || ctx.channel == null) {
+            return true;
+        }
+        try {
+            NettyPipelineData pipelineData = ctx.channel.attr(PipelineAttributes.<NettyPipelineData>pipelineData()).get();
+            if (pipelineData == null || !pipelineData.isEaglerPlayer()
+                    || pipelineData.uuid == null || pipelineData.username == null) {
+                return true;
+            }
+
+            GameProfile original = (GameProfile)this.loginListenerGameProfile.get(loginListener);
+            if (original == null) {
+                return true;
+            }
+            String profileName = AuthlibCompat.getProfileName(original);
+            if (profileName == null || !pipelineData.username.equalsIgnoreCase(profileName)) {
+                return true;
+            }
+
+            UUID originalUUID = AuthlibCompat.getProfileId(original);
+            if (pipelineData.uuid.equals(originalUUID)) {
+                this.registerCtxByUUID(originalUUID, ctx);
+                return true;
+            }
+
+            GameProfile replacement = this.createGameProfile(pipelineData.uuid, profileName, original);
+            this.loginListenerGameProfile.set(loginListener, replacement);
+            this.ctxByUUID.values().remove(ctx);
+            this.registerCtxByUUID(pipelineData.uuid, ctx);
+            this.plugin.logger().info("EaglerXServer: applying authenticated profile UUID for " + profileName);
+            return true;
+        }
+        catch (Throwable t) {
+            this.plugin.logger().error("EaglerXServer: could not apply authenticated profile UUID; closing connection", t);
+            return false;
+        }
+    }
+
+    private static GameProfile createGameProfile(UUID uuid, String name, GameProfile original) throws Exception {
+        Object properties = AuthlibCompat.getProperties(original);
+        for (Constructor<?> ctor : GameProfile.class.getConstructors()) {
+            Class<?>[] params = ctor.getParameterTypes();
+            if (params.length == 2 && params[0] == UUID.class && params[1] == String.class) {
+                GameProfile replacement = (GameProfile)ctor.newInstance(uuid, name);
+                AuthlibCompat.getProperties(replacement).putAll(AuthlibCompat.getProperties(original));
+                return replacement;
+            }
+            if (params.length == 3 && params[0] == UUID.class && params[1] == String.class
+                    && params[2].isInstance(properties)) {
+                return (GameProfile)ctor.newInstance(uuid, name, properties);
+            }
+        }
+        throw new NoSuchMethodException("No compatible GameProfile constructor found");
     }
 
     private static Object findEnumValueByName(Class<?> enumClass, String ... names) {
