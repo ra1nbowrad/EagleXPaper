@@ -110,7 +110,11 @@ public final class AuthMeEaglerAuthListener implements Listener {
 
             event.setProfileUsername(premiumProfile.name);
             event.setProfileUUID(premiumProfile.uuid);
-            authenticatedNames.put(premiumProfile.name.toLowerCase(Locale.ROOT), System.currentTimeMillis());
+            String authenticatedKey = premiumProfile.name.toLowerCase(Locale.ROOT);
+            long authenticatedAt = System.currentTimeMillis();
+            authenticatedNames.put(authenticatedKey, authenticatedAt);
+            plugin.getServer().getScheduler().runTaskLater(plugin,
+                    () -> authenticatedNames.remove(authenticatedKey, authenticatedAt), 20L * 30L);
             event.setLoginAllowed();
         } catch (Exception ex) {
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
