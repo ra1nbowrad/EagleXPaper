@@ -123,10 +123,12 @@ public final class AuthMeEaglerAuthListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
+        if (!isEaglerPlayer(player)) {
+            return;
+        }
         String key = player.getName().toLowerCase(Locale.ROOT);
         Long authenticatedAt = authenticatedNames.remove(key);
-        if (authenticatedAt == null || System.currentTimeMillis() - authenticatedAt > 30000L
-                || !isEaglerPlayer(player)) {
+        if (authenticatedAt == null || System.currentTimeMillis() - authenticatedAt > 30000L) {
             return;
         }
 
