@@ -144,15 +144,19 @@ public abstract class HandshakerInstance implements IHandshaker {
 			server.eventDispatcher().dispatchAuthCheckRequired(pipelineData.asPendingConnection(),
 					pipelineData.handshakeAuthEnabled, pipelineData.handshakeAuthUsername,
 					inEventLoop(ctx.channel(), (evt, err) -> {
-				if (err == null) {
-					IEaglercraftAuthCheckRequiredEvent.EnumAuthResponse response = evt.getAuthRequired();
-					if (response == null) {
-						state = HandshakePacketTypes.STATE_CLIENT_VERSION;
-						inboundHandler.canSendV3Kick = true;
-						sendPacketVersionNoAuth(ctx, pipelineData.handshakeProtocol,
-								pipelineData.minecraftProtocol, server.getServerBrand(),
-								server.getServerVersion());
-					} else {
+				if (err != null || evt == null) {
+					state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+					inboundHandler.terminateInternalError(ctx, getVersion());
+					pipelineData.connectionLogger.error("Caught exception dispatching auth required check event", err);
+					return;
+				}
+				IEaglercraftAuthCheckRequiredEvent.EnumAuthResponse response = evt.getAuthRequired();
+				if (response == null) {
+					// Authentication events are enabled, so a missing decision must not silently disable auth.
+					state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+					inboundHandler.terminateErrorCode(ctx, getVersion(),
+							HandshakePacketTypes.SERVER_ERROR_CUSTOM_MESSAGE, "Authentication is not configured");
+				} else {
 						pipelineData.nicknameSelectionEnabled = evt.isNicknameSelectionEnabled();
 						pipelineData.cookieAuthEventEnabled = evt.getEnableCookieAuth();
 						pipelineData.authType = evt.getUseAuthTypeRaw();
