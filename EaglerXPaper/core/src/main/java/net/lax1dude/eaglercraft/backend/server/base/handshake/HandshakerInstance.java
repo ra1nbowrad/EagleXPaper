@@ -442,10 +442,18 @@ public abstract class HandshakerInstance implements IHandshaker {
 				authPassword, pipelineData.cookieEnabled, pipelineData.cookieData, requestedUsername,
 				pipelineData.username, pipelineData.uuid, pipelineData.authType, pipelineData.authMessage,
 				pipelineData.requestedServer, inEventLoop(ctx.channel(), (evt, err) -> {
+			if (err != null || evt == null) {
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				inboundHandler.terminateInternalError(ctx, getVersion());
+				pipelineData.connectionLogger.error("Caught exception dispatching auth password event", err);
+				return;
+			}
 			IEaglercraftAuthPasswordEvent.EnumAuthResponse response = evt.getAuthResponse();
 			if (response == null) {
-				pipelineData.requestedServer = "";
-				handleContinueLogin(ctx);
+				// Authentication is enabled: an unanswered event must never grant access.
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				Object obj = server.componentBuilder().buildTranslationComponent().translation("disconnect.closed").end();
+				sendPacketDenyLogin(ctx, obj).addListener(ChannelFutureListener.CLOSE);
 			} else if (response == IEaglercraftAuthPasswordEvent.EnumAuthResponse.ALLOW) {
 				pipelineData.username = evt.getProfileUsername();
 				if (server.getPlatform().getType() != EnumAdapterPlatformType.BUKKIT) {
@@ -475,10 +483,18 @@ public abstract class HandshakerInstance implements IHandshaker {
 				pipelineData.cookieData, requestedUsername, pipelineData.username, pipelineData.uuid,
 				pipelineData.authType, pipelineData.authMessage, pipelineData.requestedServer,
 				inEventLoop(ctx.channel(), (evt, err) -> {
+			if (err != null || evt == null) {
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				inboundHandler.terminateInternalError(ctx, getVersion());
+				pipelineData.connectionLogger.error("Caught exception dispatching auth cookie event", err);
+				return;
+			}
 			IEaglercraftAuthCookieEvent.EnumAuthResponse response = evt.getAuthResponse();
 			if (response == null) {
-				pipelineData.username = requestedUsername;
-				handleContinueLogin(ctx);
+				// Authentication is enabled: an unanswered event must never grant access.
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				Object obj = server.componentBuilder().buildTranslationComponent().translation("disconnect.closed").end();
+				sendPacketDenyLogin(ctx, obj).addListener(ChannelFutureListener.CLOSE);
 				return;
 			}
 			switch (response) {
