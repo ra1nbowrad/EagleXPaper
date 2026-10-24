@@ -785,7 +785,10 @@ public class PlayerPostLoginInjector {
 
             UUID originalUUID = AuthlibCompat.getProfileId(original);
             if (pipelineData.uuid.equals(originalUUID)) {
-                this.registerCtxByUUID(originalUUID, ctx);
+                if (this.ctxByUUID.get(originalUUID) != ctx) {
+                    this.ctxByUUID.values().remove(ctx);
+                    this.registerCtxByUUID(originalUUID, ctx);
+                }
                 return true;
             }
 
