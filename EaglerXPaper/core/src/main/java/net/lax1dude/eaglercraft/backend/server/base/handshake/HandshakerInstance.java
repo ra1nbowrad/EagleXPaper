@@ -208,12 +208,6 @@ public abstract class HandshakerInstance implements IHandshaker {
 							break;
 						}
 					}
-				} else {
-					state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
-					inboundHandler.terminateInternalError(ctx, getVersion());
-					pipelineData.connectionLogger
-							.error("Caught exception dispatching auth required check event", err);
-				}
 			}));
 		} else {
 			state = HandshakePacketTypes.STATE_CLIENT_VERSION;
