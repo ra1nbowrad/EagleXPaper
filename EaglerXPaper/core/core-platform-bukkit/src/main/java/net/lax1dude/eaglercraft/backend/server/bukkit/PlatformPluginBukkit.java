@@ -136,7 +136,7 @@ import org.bukkit.plugin.messaging.Messenger;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.scheduler.BukkitTask;
 
-@Plugin(name="EaglercraftXServer", version="1.1.1 Stable 1", description="Official EaglercraftX plugin for Spigot and Paper servers", spigot=@Plugin.Spigot(authors={"lax1dude"}, website="https://lax1dude.net/eaglerxserver", prefix="EaglerXServer"), dependencies={@Dependency(name="SkinsRestorer", type=DependencyType.SOFTDEPEND)})
+@Plugin(name="EaglercraftXServer", version="1.1.1 Stable 1", description="Official EaglercraftX plugin for Spigot and Paper servers", spigot=@Plugin.Spigot(authors={"lax1dude"}, website="https://lax1dude.net/eaglerxserver", prefix="EaglerXServer"), dependencies={@Dependency(name="SkinsRestorer", type=DependencyType.SOFTDEPEND), @Dependency(name="AuthMe", type=DependencyType.SOFTDEPEND)})
 public class PlatformPluginBukkit
 extends JavaPlugin
 implements IPlatform<Player> {
