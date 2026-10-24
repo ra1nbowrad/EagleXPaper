@@ -1,0 +1,232 @@
+# Changelog
+
+All notable changes to Gaius are documented here.
+
+## [0.3.3] - 2026-10-02
+
+### Fixed
+
+- Laggy main menu: new browser profiles default to "Unlimited" FPS without
+  VSync, and the title screen draws a frame in about 1.5 ms, so the game
+  presented hundreds of frames per second back to back. That saturated the GPU
+  and the page, and weaker machines only got a few screen updates per second.
+  Uncapped frames are now held to the display: one present per refresh in
+  menus (the vanilla menu limit) and at most three per refresh in a world.
+  Frames that take half a refresh or longer are never held.
+
+### Added
+
+- Minecraft 1.21.11 is built and released again: `Gaius-1.21.11.html` ships
+  next to the 26.2 and 26.3 clients, and GitHub Pages serves all three.
+- Minecraft-style boot screen: a pixel-art GAIUS logo, a dirt background and a
+  vanilla-style progress bar. The progress bar keeps moving while the client
+  starts and reloads resources (calibrated from the previous boot) instead of
+  sitting at 82%.
+- New players of the 26.2 and 26.3 clients see the Edit Profile screen the
+  first time they join, to pick a name and skin.
+- Relays screen (Multiplayer > Relays): add, edit, reorder, disable and remove
+  relays, and choose whether each one is used for multiplayer, LAN invites or
+  both. Relays from `?relay=` / `?bridge=` URLs keep priority.
+
+### Performance
+
+- Faster startup: block face sturdiness is computed once per collision shape
+  instead of eighteen times per block state (client and integrated server),
+  and the title panorama copies image rows in bulk instead of one pixel at a
+  time. {{BOOT}}
+
+## [0.3.2] - 2026-10-02
+
+### Fixed
+
+- Singleplayer server crash "RangeError: Maximum call stack size exceeded"
+  while chunks load: with TeaVM's synchronous Worker executor every queued
+  light or worldgen runnable re-entered `AbstractConsecutiveExecutor.run()` one
+  stack level deeper, so a burst of queued runnables overflowed the Worker
+  stack. The re-registration is now trampolined (same order, same exception
+  behavior, no stack growth).
+
+### Performance
+
+- 26.3: the server Worker no longer re-merges the biome and dimension mob spawn
+  settings for every entity on every tick (`MobSpawnSettingsModifier.Overlay`,
+  a pure function of two immutable values, about 5% of the Worker while chunks
+  load). Seed 26300, view distance 8: the 329-chunk spawn area settles in
+  about 87-100 s instead of about 108 s.
+
+## [0.3.1] - 2026-10-01
+
+### Fixed
+
+- Portable `Gaius-<profile>.html` opened from `file://`: Chrome refuses OPFS on
+  `file://` pages, so singleplayer worlds live in the IndexedDB fallback, whose
+  in-memory region cache is the world's only synchronous copy. Its 32 MiB budget
+  stopped a world from opening again ("Saved regions exceed the IndexedDB
+  compatibility cache budget") after roughly 15 minutes of exploring. Without an
+  explicitly configured budget the fallback now allows 256 MiB.
+
+### Performance
+
+- Singleplayer chunk generation in the server Worker is faster: about 1.45x on
+  26.3 (seed 26300: the 329-chunk view-distance-8 area around spawn settles in
+  ~108 s instead of ~157 s; world entry ~17 s instead of ~23 s) and about 1.26x
+  on 26.2 (~96 s instead of ~121 s; world entry ~15 s instead of ~17 s):
+  - TeaVM no longer makes every method that triggers an async class initializer
+    async in the Worker build (`gaius.teavm.syncClinits`). That single edge
+    (`Mth.<clinit>` -> `Util.make` -> async `Util.<clinit>`) had compiled 36k of
+    83k Worker methods, every worldgen kernel included, into coroutines. Class
+    initializers run inside a `__gaiusClinitDepth` scope in which cooperative
+    yields and `LockSupport` parking return at once instead of suspending.
+  - Biome zoom (`BiomeManager.getBiome`, about 190k calls/s, also used by mob
+    spawning for every entity each tick) caches the per-quart LCG offsets of the
+    current seed instead of recomputing eight BigInt chains per call.
+  - TeaVM's `Set.of`/`Set.copyOf`/`Map.of` answered every miss with a linear
+    `equals` scan; block tag checks are mostly misses. Lookups now use a lazily
+    built hash index.
+
+## [0.3.0] - 2026-10-01
+
+### Release
+
+- Ship two browser clients: Minecraft Java `26.2` (protocol `776`) and
+  Minecraft Java `26.3` (protocol `777`, world version `5023`), each as a
+  portable `Gaius-<profile>.html` with its own manifest and checksum record.
+  Minecraft `1.21.11` stays retired. See `docs/release-v0.3.0.md`.
+- Deploy both clients to GitHub Pages: `pages.yml` downloads exactly
+  `Gaius-26.2.html` and `Gaius-26.3.html` from the release, verifies each
+  against its one `SHA256SUMS` record, and still refuses `Gaius-1.21.11.html`.
+  `tools/verify-github-pages-cdp.mjs` checks both live pages and binds each
+  to `GAIUS_PAGES_EXPECTED_SHA256_262` / `GAIUS_PAGES_EXPECTED_SHA256_263`.
+- Default `tools/build-and-publish-prerelease.ps1` to the `26.2` and `26.3`
+  profiles.
+
+### Added
+
+- The Minecraft 26.3 client: SDL3 window and input shim, renderpearl render
+  backend patches, LWJGL 3.4.3 memory backend, authlib 10, and the
+  WebAssembly shader toolchain (shaderc and SPIRV-Cross) that compiles the
+  client's shaders in the browser.
+- `build-portable-html.py` embeds the shader toolchain of a client that loads
+  it (the loader runs inline after the portable bootstrap and receives the
+  modules as Blob URLs through `window.__gaiusShaderToolchainUrls`), records
+  it in the portable manifest under `shaderToolchain`, and verifies the new
+  `shader-toolchain` build identity that `build-teavm-release.sh` writes on
+  `gaius-shader-toolchain.json`. A 26.2 page has no toolchain and its
+  portable output is unchanged byte for byte.
+
+### Fixed
+
+- Portable `Gaius-<profile>.html`: starting a second singleplayer world in the
+  same page (for example re-entering a world after Save and Quit without
+  reloading) no longer fails with "Singleplayer startup failed"; the page
+  transferred the already-detached embedded server buffer to the new Worker
+  (`DataCloneError`). Each start now transfers its own copy.
+
+## [0.1.0] - 2026-09-05
+
+### Release
+
+- Prepare the dual-profile release for Minecraft Java `1.21.11` (protocol
+  `774`, JDK 21) and `26.2` (protocol `776`, JDK 25), with independent browser
+  packages, manifests, checksums, and the optional Paper bridge plugin.
+- Keep the external multiplayer test target in the private acceptance
+  environment. Never commit a target host or source IP to the repository.
+  Status/attestation and lease-release checks are transport evidence; they do
+  not assert a complete LOGIN/PLAY session.
+
+### Added
+
+- Opt-in counters for server tick intervals over 100/500 ms and tick work or
+  wait phases over 500 ms, so measurement windows can expose stalls hidden by
+  average TPS. These diagnostics do not change gameplay scheduling.
+- Retain one payload-free inbound frame-limit failure snapshot before channel
+  cleanup, so queue depth and flow-control state remain available after disconnect.
+
+### Fixed
+
+- Batch adjacent ordinary PLAY packets into bounded 16 KiB WebSocket messages
+  within the relay's existing 32-packet drain budget. Preserve packet order,
+  send ownership, keepalive and configuration boundaries, and expose separate
+  packet and WebSocket message counters.
+- Start Minecraft 1.21.11 chunk-holder continuations inside a TeaVM thread,
+  preserving the runtime context needed when future completion resumes work
+  that can suspend. Keep the existing synchronous world-generation boundaries.
+- Include pending transport frames in inbound flow-control watermarks, so a
+  drained decoder slice queue does not resume the relay while thousands of
+  small frames remain queued. Preserve the 4096-frame and 64 MiB hard limits.
+- Give Mob AI checkpoints a separate 8 ms cooperation window, measured from
+  the actual continuation resume time. Mob work does not own the worldgen
+  task clock; routing every AI stage through its two-pulse network preemption
+  path introduced repeated waits. AI stages and the existing continuation
+  cleanup remain unchanged. Full rebuilt-profile playability checks are pending.
+- Preserve the singleplayer world's selected game mode when starting the
+  server Worker instead of replacing it with the dedicated-server default.
+- Index ZIP resource names once per open archive and limit resource listing to
+  matching prefixes, preserving archive order, overlay paths, and lazy reads.
+  This removes repeated full-archive scans observed during multiplayer loading;
+  rebuilt browser loading and playability acceptance remain pending.
+- Return Minecraft `26.2` chunk-generation batches to the server dispatcher
+  through pending futures after at most 16 holders, preserving layer dependency
+  ordering and cancellation cleanup. Browser yields alone previously resumed
+  the same server call stack. Moving-world TPS and Mob playability acceptance
+  remain pending the rebuilt browser artifact.
+- Generate the launcher's displayed release version from `VERSION` instead
+  of the stale `0.0.1` label, and include it in the build input identity.
+- Initialize the real inbound scheduler in the local MessagePort lifecycle
+  smoke, matching the production channel constructor. Inspect asynchronous
+  failure diagnostics without racing automatic closed-channel retirement.
+- Exercise the tracked launcher template in source checks instead of reading
+  a generated LFS bundle that is only a pointer in lightweight CI checkouts.
+- Align the compiled Netty pump check with its progress-returning boolean
+  signature and tightened 256 KiB byte budget. The obsolete void/1 MiB check
+  incorrectly rejected both successfully compiled `v0.0.3` profiles.
+- Run singleplayer storage, world reload, Worker bootstrap, MessagePort
+  ownership, and profile isolation regressions before costly release builds.
+- Validate the requested release tag before compilation and retain TeaVM
+  build diagnostics on failed CI runs.
+
+## [0.0.3] - 2026-09-05
+
+### Added
+
+- Minecraft Java `26.2` as the primary browser client profile while retaining
+  the `1.21.11` compatibility profile.
+- Profile-scoped dual-version release builds, artifact identity records, and
+  release checks for both portable clients.
+
+### Improved
+
+- Multiplayer packet scheduling, bounded browser inbound and outbound drains,
+  RelayNode frame handling, stale-owner isolation, reconnect cleanup, and
+  browser-side diagnostics.
+
+### Release Notes
+
+- The `v0.0.3` release is produced by the dual-profile GitHub Actions matrix and
+  includes a profile manifest, SHA256 checksums, and the optional Paper plugin.
+- The browser client remains experimental; runtime compatibility still depends
+  on the selected Minecraft server, Chrome/Chromium, and an available relay or
+  compatible server plugin.
+
+## [0.0.1] - 2026-08-09
+
+### Added
+
+- First public release of Gaius Client for Minecraft Java 1.21.11.
+- A downloadable browser client package at `port/web/dist/Gaius.html`.
+- An optional Paper server plugin for servers that want a direct Gaius WebSocket bridge.
+- RelayNode and public relay-registry support for temporary WebSocket-to-TCP translation when a target server does not have the plugin.
+- Git LFS tracking for the generated browser release and other intentionally large bundles.
+
+### Improved
+
+- Browser startup, single-player integrated-server handoff, world-generation scheduling, and packet fairness paths.
+- Browser audio through the Web Audio/OpenAL bridge.
+- Browser rendering and resource setup, including texture atlas and generated asset handling.
+- Repository checks and release documentation for source builds, LFS-backed artifacts, Chrome verification, and checksums.
+
+### Release Notes
+
+- The browser client is experimental and is currently validated with Google Chrome.
+- Multiplayer access depends on a compatible Gaius server plugin or an available RelayNode/public relay service. This release does not guarantee compatibility with every Java server or protocol configuration.
+- Generated client and game assets may have separate redistribution requirements. Review the repository's licensing and attribution information before redistributing artifacts.

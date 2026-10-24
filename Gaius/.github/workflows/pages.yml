@@ -1,0 +1,147 @@
+name: Deploy Gaius GitHub Pages
+run-name: Deploy Gaius Pages [${{ inputs.release_token || github.sha }}]
+
+# Pages publishes exactly three files: the Minecraft 1.21.11, 26.2 and 26.3
+# browser clients (Gaius-1.21.11.html, Gaius-26.2.html and Gaius-26.3.html).
+# Nothing in the repository checkout is
+# published, so the workflow runs only on dispatch. Without release_tag it
+# follows the repository's Latest release; release_tag pins a specific tag (for
+# example a pre-release). The deployed bytes must match that release's
+# SHA256SUMS; releases without one fail closed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_token:
+        description: Unique token binding a release publish to this Pages run
+        required: true
+        type: string
+      release_tag:
+        description: Release tag whose Gaius-1.21.11.html, Gaius-26.2.html and Gaius-26.3.html should be deployed (empty = the repository's Latest release)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout: nothing from the repository is published, and every step
+      # below reads only release assets (gh release download --repo).
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Resolve release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_RELEASE_TAG}" ]; then
+            tag="${REQUESTED_RELEASE_TAG}"
+            source='release_tag input'
+          else
+            # Without a tag argument gh resolves releases/latest: the release
+            # marked Latest (never a draft or pre-release).
+            tag="$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName --jq .tagName)"
+            source='Latest release'
+          fi
+          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+            # Never echo the raw value: it could smuggle workflow commands.
+            echo "::error::Refusing unexpected release tag from ${source}"
+            printf 'Rejected release tag (shell-escaped): %q\n' "$tag"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "source=${source}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag ${tag} (${source}); not yet verified"
+      - name: Download and verify the Minecraft 1.21.11, 26.2 and 26.3 clients
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES_RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          PAGES_RELEASE_SOURCE: ${{ steps.release.outputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf pages-publish
+          mkdir -p pages-publish
+          gh release download "$PAGES_RELEASE_TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'Gaius-1.21.11.html' \
+            --pattern 'Gaius-26.2.html' \
+            --pattern 'Gaius-26.3.html' \
+            --dir pages-publish \
+            --clobber
+          # The published site is exactly these three files.
+          test "$(find pages-publish -mindepth 1 | wc -l)" -eq 3
+          test -f pages-publish/Gaius-1.21.11.html
+          test -s pages-publish/Gaius-1.21.11.html
+          test -f pages-publish/Gaius-26.2.html
+          test -s pages-publish/Gaius-26.2.html
+          test -f pages-publish/Gaius-26.3.html
+          test -s pages-publish/Gaius-26.3.html
+          # Bind the deployed bytes to the release. SHA256SUMS stays outside the
+          # publish directory; gh fails when the release has no SHA256SUMS asset.
+          sums_dir="${RUNNER_TEMP}/pages-release-sums"
+          rm -rf "$sums_dir"
+          mkdir -p "$sums_dir"
+          gh release download "$PAGES_RELEASE_TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'SHA256SUMS' \
+            --dir "$sums_dir" \
+            --clobber
+          test -s "$sums_dir/SHA256SUMS"
+          # Exactly one record per client, and every client must verify before upload.
+          grep -E '^[0-9a-f]{64}  Gaius-1\.21\.11\.html$' "$sums_dir/SHA256SUMS" > "$sums_dir/Gaius-1.21.11.html.sha256" || true
+          if [ "$(wc -l < "$sums_dir/Gaius-1.21.11.html.sha256")" -ne 1 ]; then
+            echo "::error::SHA256SUMS of ${PAGES_RELEASE_TAG} must hold exactly one Gaius-1.21.11.html record"
+            exit 1
+          fi
+          grep -E '^[0-9a-f]{64}  Gaius-26\.2\.html$' "$sums_dir/SHA256SUMS" > "$sums_dir/Gaius-26.2.html.sha256" || true
+          if [ "$(wc -l < "$sums_dir/Gaius-26.2.html.sha256")" -ne 1 ]; then
+            echo "::error::SHA256SUMS of ${PAGES_RELEASE_TAG} must hold exactly one Gaius-26.2.html record"
+            exit 1
+          fi
+          grep -E '^[0-9a-f]{64}  Gaius-26\.3\.html$' "$sums_dir/SHA256SUMS" > "$sums_dir/Gaius-26.3.html.sha256" || true
+          if [ "$(wc -l < "$sums_dir/Gaius-26.3.html.sha256")" -ne 1 ]; then
+            echo "::error::SHA256SUMS of ${PAGES_RELEASE_TAG} must hold exactly one Gaius-26.3.html record"
+            exit 1
+          fi
+          (cd pages-publish && sha256sum --check --strict "$sums_dir/Gaius-1.21.11.html.sha256")
+          (cd pages-publish && sha256sum --check --strict "$sums_dir/Gaius-26.2.html.sha256")
+          (cd pages-publish && sha256sum --check --strict "$sums_dir/Gaius-26.3.html.sha256")
+          sha256_1_21_11="$(cut -d ' ' -f 1 "$sums_dir/Gaius-1.21.11.html.sha256")"
+          sha256_26_2="$(cut -d ' ' -f 1 "$sums_dir/Gaius-26.2.html.sha256")"
+          sha256_26_3="$(cut -d ' ' -f 1 "$sums_dir/Gaius-26.3.html.sha256")"
+          echo "sha256_1_21_11=${sha256_1_21_11}" >> "$GITHUB_OUTPUT"
+          echo "sha256_26_2=${sha256_26_2}" >> "$GITHUB_OUTPUT"
+          echo "sha256_26_3=${sha256_26_3}" >> "$GITHUB_OUTPUT"
+          # Only now, after every SHA256SUMS gate passed, announce the deployment.
+          {
+            echo "Deploying Gaius-1.21.11.html, Gaius-26.2.html and Gaius-26.3.html from ${PAGES_RELEASE_TAG} (${PAGES_RELEASE_SOURCE})"
+            echo "- Release tag: \`${PAGES_RELEASE_TAG}\`"
+            echo "- Gaius-1.21.11.html sha256: \`${sha256_1_21_11}\` (matches the release SHA256SUMS)"
+            echo "- Gaius-26.2.html sha256: \`${sha256_26_2}\` (matches the release SHA256SUMS)"
+            echo "- Gaius-26.3.html sha256: \`${sha256_26_3}\` (matches the release SHA256SUMS)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-publish
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

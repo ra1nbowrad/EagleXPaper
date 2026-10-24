@@ -1,0 +1,113 @@
+import assert from "node:assert/strict";
+import {readFile} from "node:fs/promises";
+import vm from "node:vm";
+
+const sourcePath = new URL("../src/main/java/dev/gaius/browser/BrowserHttpProxy.java", import.meta.url);
+const source = await readFile(sourcePath, "utf8");
+function extractJsBody(marker) {
+  const markerOffset = source.indexOf(marker);
+  const annotationOffset = source.lastIndexOf('@JSBody(params = {"target", "kind"}, script = """', markerOffset);
+  const scriptOffset = source.indexOf('"""', annotationOffset) + 3;
+  const scriptEnd = source.lastIndexOf('""")', markerOffset);
+  assert.ok(markerOffset > 0 && annotationOffset > 0 && scriptEnd > scriptOffset,
+    `JSBody could not be extracted for ${marker}`);
+  return source.slice(scriptOffset, scriptEnd).replaceAll("\\\\", "\\");
+}
+const body = extractJsBody("private static native String createProxyUrl(String target, String kind);");
+const context = {URLSearchParams, URL, Map, location: new URL("https://play.example/client/index.html"),
+  __gaiusNettyBridge: {channels: new Map()}};
+context.globalThis = context;
+const call = vm.runInNewContext(`(function(target, kind) { ${body} })`, context);
+function proxyUrl({search = "", channels = [], bridgeUrl, bridgeToken, registry,
+  page = "https://play.example/client/index.html"} = {}) {
+  context.location = new URL(page + search);
+  context.__gaiusNettyBridge = {channels: new Map(channels.map((entry, index) => [index, entry]))};
+  context.__gaiusBridgeUrl = bridgeUrl;
+  context.__gaiusBridgeToken = bridgeToken;
+  context.__gaiusBridgeUrls = registry;
+  return new URL(call("https://packs.example.test/server-pack.zip", "resource-pack"));
+}
+
+function routeTarget(target, options = {}) {
+  context.location = new URL("https://play.example/client/index.html" + (options.search || ""));
+  context.__gaiusNettyBridge = {channels: new Map((options.channels || [])
+    .map((entry, index) => [index, entry]))};
+  context.__gaiusBridgeUrl = options.bridgeUrl;
+  context.__gaiusBridgeToken = options.bridgeToken;
+  context.__gaiusBridgeUrls = options.registry;
+  return new URL(call(target, "resource-pack"));
+}
+
+let result = proxyUrl({channels: [{connected: true, currentCandidate:
+  {url: "wss://ellan.site/tunnel", token: "relay-token", direct: false}}]});
+assert.equal(result.origin, "https://ellan.site");
+assert.equal(result.pathname, "/proxy/resource-pack");
+assert.equal(result.searchParams.get("stream"), "1");
+assert.equal(new URL(call("https://textures.minecraft.net/texture/test", "texture"))
+  .searchParams.has("stream"), false);
+assert.equal(result.searchParams.get("token"), "relay-token");
+
+result = proxyUrl({channels: [
+  {connected: true, currentCandidate: {url: "wss://direct.example/tunnel", direct: true}},
+  {connected: false, currentCandidate: {url: "wss://stale.example/tunnel", token: "stale", direct: false}},
+]});
+assert.equal(result.origin, "https://play.example:8080");
+assert.equal(result.searchParams.has("token"), false);
+
+result = proxyUrl({channels: [
+  {connected: true, currentCandidate: {url: "wss://status.example/tunnel", token: "status", direct: false}},
+  {connected: true, currentCandidate: {url: "wss://play.example/tunnel", token: "play", direct: false}},
+]});
+assert.equal(result.origin, "https://play.example:8080");
+
+result = proxyUrl({channels: [
+  {connected: true, currentCandidate: {url: "wss://ellan.site/tunnel", direct: false}},
+  {connected: true, currentCandidate: {url: "wss://ellan.site/tunnel", token: "relay-token", direct: false}},
+]});
+assert.equal(result.origin, "https://ellan.site");
+assert.equal(result.searchParams.get("token"), "relay-token");
+
+result = proxyUrl({search: "?bridge=https%3A%2F%2Fconfigured.example%2Ftunnel&bridgeToken=explicit",
+  channels: [{connected: true, currentCandidate:
+    {url: "wss://ellan.site/tunnel", token: "relay-token", direct: false}}]});
+assert.equal(result.origin, "https://configured.example");
+assert.equal(result.searchParams.get("token"), "explicit");
+
+result = routeTarget("https://jihulab.com/-/project/356228/uploads/"
+  + "e409655d230380173547e68c5ef026d4/resource_pack.zip", {
+  channels: [{connected: true, currentCandidate:
+    {url: "wss://ellan.site/tunnel", token: "relay-token", direct: false}}],
+});
+// Every pack, including the previously pinned source, must use the relay.
+assert.doesNotMatch(source, /PINNED_RESOURCE_PACK|github\.io\/Gaius\/resource-packs/);
+assert.match(source, /return proxy\(target, "resource-pack"\)/);
+assert.match(source, /browserSafeResourcePackHeaders/);
+assert.equal(result.origin, "https://ellan.site");
+assert.equal(result.pathname, "/proxy/resource-pack");
+assert.equal(result.searchParams.get("url"), "https://jihulab.com/-/project/356228/uploads/"
+  + "e409655d230380173547e68c5ef026d4/resource_pack.zip");
+
+// Pre-connect requests (Mojang blocked-servers check) run before any tunnel is
+// live. A hosted page must use the bundled relay, never its own host on :8080.
+const registry = [
+  {id: "low", url: "wss://low.example/tunnel", priority: 10},
+  {id: "gaius-hk-1", url: "wss://ellan.site/tunnel", priority: 100},
+];
+result = proxyUrl({page: "https://typethe0ry.github.io/Gaius/Gaius-26.2.html", registry});
+assert.equal(result.origin, "https://ellan.site");
+assert.equal(result.pathname, "/proxy/resource-pack");
+result = proxyUrl({page: "file:///C:/Gaius/Gaius-26.2.html", registry});
+assert.equal(result.origin, "https://ellan.site");
+// Local development keeps the local bridge on :8080.
+result = proxyUrl({page: "http://localhost:8780/index.html", registry});
+assert.equal(result.origin, "http://localhost:8080");
+result = proxyUrl({page: "http://127.0.0.1:8780/index.html", registry});
+assert.equal(result.origin, "http://127.0.0.1:8080");
+// A live attested relay and an explicit bridge still win over the registry.
+result = proxyUrl({registry, channels: [{connected: true, currentCandidate:
+  {url: "wss://live.example/tunnel", token: "live", direct: false}}]});
+assert.equal(result.origin, "https://live.example");
+result = proxyUrl({registry, search: "?bridge=https%3A%2F%2Fconfigured.example%2Ftunnel"});
+assert.equal(result.origin, "https://configured.example");
+
+console.log("browser-http-proxy-routing-smoke: PASS");

@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+
+maven_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+config="$root/port/config.json"
+source "$root/port/scripts/version-profile.sh"
+gaius_load_version_profile "$root"
+gaius_select_java_home
+version="$GAIUS_MINECRAFT_VERSION"
+teavm_version="$(jq -er '.teaVMVersion' "$config")"
+work="$root/port/work/$version"
+metadata="$work/version.json"
+build_root="$(gaius_build_root "$root")"
+overlay_directory="$(gaius_overlay_directory "$root")"
+client="$overlay_directory/client-named-$version-gaius.jar"
+output="$(gaius_resolve_path "$root" "${GAIUS_POM:-$build_root/generated-pom.xml}")"
+main_class="${GAIUS_MAIN_CLASS:-net.minecraft.client.main.Main}"
+if [[ -n "${GAIUS_TARGET_DIRECTORY:-}" ]]; then
+  target_directory="$(gaius_resolve_path "$root" "$GAIUS_TARGET_DIRECTORY")"
+else
+  target_directory="$(gaius_dist_directory "$root")"
+fi
+target_file="${GAIUS_TARGET_FILE:-classes.js}"
+maven_directory="$(gaius_resolve_path "$root" "${GAIUS_MAVEN_DIRECTORY:-$build_root/maven}")"
+resource_directory="$(gaius_resolve_path "$root" "${GAIUS_RESOURCE_DIRECTORY:-$build_root/generated-resources}")"
+patched_classlib="$overlay_directory/teavm-classlib-$teavm_version-gaius.jar"
+optimization_level="${GAIUS_TEA_OPTIMIZATION_LEVEL:-SIMPLE}"
+source_maps_generated="${GAIUS_SOURCE_MAPS:-true}"
+debug_information_generated="${GAIUS_DEBUG_INFO:-true}"
+minifying="${GAIUS_MINIFYING:-false}"
+short_file_names="${GAIUS_SHORT_FILE_NAMES:-false}"
+assertions_removed="${GAIUS_ASSERTIONS_REMOVED:-false}"
+excluded_library_prefixes="${GAIUS_EXCLUDED_LIBRARY_PREFIXES:-}"
+
+# PlatformSmoke contains optional render-backend probes whose direct calls
+# track the current named (26.2) API.  The 1.21.11 mapped profile does not
+# need this smoke main class for the normal Minecraft client entrypoint, and
+# compiling it would incorrectly make the legacy POM depend on 26.2-only
+# method signatures. Keep the source available for the named profile while
+# excluding it from the legacy client compilation set.
+compiler_source_excludes=""
+if [[ "$GAIUS_CLIENT_DISTRIBUTION" == "obfuscated-with-mappings" ]]; then
+  compiler_source_excludes="            <excludes>
+              <exclude>dev/gaius/browser/PlatformSmoke.java</exclude>
+              <exclude>dev/gaius/browser/BrowserProfile.java</exclude>
+              <exclude>dev/gaius/browser/BrowserProfileScreen.java</exclude>
+              <exclude>dev/gaius/browser/BrowserSectionAudit.java</exclude>
+            </excludes>"
+fi
+
+# Profile source sets: port/src/main/java is shared by every profile.
+# port/src/versions/<profile>/java replaces shared files with the same relative
+# path (and may add new ones), and port/src/versions/<profile>/excludes.txt
+# lists shared relative paths the profile does not compile (format: see
+# gaius_version_excludes in version-profile.sh).  The merged tree is staged
+# under $build_root/sources and becomes the only Maven source directory.  A
+# profile without a version directory (26.2) stages an exact copy of
+# port/src/main/java.
+#
+# The staged tree is replaced only when its content changes, and a replaced
+# tree is copied without preserving modification times.  A staged path can
+# switch between a version file and the shared file (for example when a
+# version override is deleted), and the file it switches to is usually older
+# than the classes compiled from the previous tree; with its original time
+# Maven's stale-source check would keep those classes.  Every file of a
+# replaced tree is newer than any class compiled before, so Maven recompiles
+# (it rebuilds the whole module on any change anyway), while an unchanged tree
+# keeps its times and an unchanged rebuild stays up to date.
+shared_source_root="$root/port/src/main/java"
+version_source_root="$root/port/src/versions/$version/java"
+version_source_excludes="$root/port/src/versions/$version/excludes.txt"
+staged_source_directory="$build_root/sources"
+
+stage_profile_sources() {
+  local staging="$staged_source_directory.staging.$$"
+  local excludes
+  local excluded
+  excludes="$(gaius_version_excludes "$version_source_excludes" "$shared_source_root")" \
+    || exit 1
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  cp -R "$shared_source_root/." "$staging/"
+  while IFS= read -r excluded; do
+    if [[ -n "$excluded" ]]; then
+      rm -f "$staging/$excluded"
+    fi
+  done <<<"$excludes"
+  if [[ -d "$version_source_root" ]]; then
+    cp -R "$version_source_root/." "$staging/"
+  fi
+  if [[ -d "$staged_source_directory" ]] \
+      && diff -rq "$staged_source_directory" "$staging" >/dev/null 2>&1; then
+    rm -rf "$staging"
+  else
+    rm -rf "$staged_source_directory"
+    mv "$staging" "$staged_source_directory"
+  fi
+}
+
+maven_patched_classlib="$(maven_path "$patched_classlib")"
+maven_client="$(maven_path "$client")"
+maven_target_directory="$(maven_path "$target_directory")"
+maven_maven_directory="$(maven_path "$maven_directory")"
+maven_resource_directory="$(maven_path "$resource_directory")"
+maven_source_directory="$(maven_path "$staged_source_directory")"
+maven_source_resources="$(maven_path "$root/port/src/main/resources")"
+maven_teavm_core_patch="$(maven_path "$overlay_directory/teavm-core-$teavm_version-gaius.jar")"
+if [[ -n "$excluded_library_prefixes" ]]; then
+  IFS=',' read -r -a excluded_library_prefix_list <<<"$excluded_library_prefixes"
+else
+  # macOS Bash 3 treats expansion of an empty array as an unbound variable under set -u.
+  excluded_library_prefix_list=("")
+fi
+
+case "$optimization_level" in
+  SIMPLE|ADVANCED|FULL) ;;
+  *)
+    echo "Invalid GAIUS_TEA_OPTIMIZATION_LEVEL: $optimization_level (expected SIMPLE, ADVANCED, or FULL)" >&2
+    exit 1
+    ;;
+esac
+
+for boolean_name in source_maps_generated debug_information_generated minifying short_file_names assertions_removed; do
+  boolean_value="${!boolean_name}"
+  case "$boolean_value" in
+    true|false) ;;
+    *)
+      echo "Invalid boolean value for $boolean_name: $boolean_value (expected true or false)" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ ! -f "$metadata" || ! -f "$client" || ! -f "$patched_classlib" ]]; then
+  echo "Run fetch-version.sh and remap-client.sh first" >&2
+  echo "Then run build-overlays.sh" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$output")" "$root/port/src/main/java" \
+  "$target_directory" "$maven_directory" "$build_root"
+stage_profile_sources
+
+{
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.gaius</groupId>
+  <artifactId>minecraft-$version-browser</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>21</maven.compiler.release>
+    <teavm.version>$teavm_version</teavm.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-interop</artifactId>
+      <version>\${teavm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-jso</artifactId>
+      <version>\${teavm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-jso-apis</artifactId>
+      <version>\${teavm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.gaius.teavm</groupId>
+      <artifactId>teavm-classlib-overlay</artifactId>
+      <version>\${teavm.version}</version>
+      <scope>system</scope>
+      <systemPath>$maven_patched_classlib</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-core</artifactId>
+      <version>\${teavm.version}</version>
+      <scope>system</scope>
+      <systemPath>$maven_teavm_core_patch</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-platform</artifactId>
+      <version>\${teavm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-jso-impl</artifactId>
+      <version>\${teavm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.teavm</groupId>
+      <artifactId>teavm-metaprogramming-impl</artifactId>
+      <version>\${teavm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.jcraft</groupId>
+      <artifactId>jzlib</artifactId>
+      <version>1.1.3</version>
+    </dependency>
+    <dependency>
+      <groupId>joda-time</groupId>
+      <artifactId>joda-time</artifactId>
+      <version>2.12.2</version>
+    </dependency>
+    <dependency>
+      <groupId>dev.gaius.minecraft</groupId>
+      <artifactId>client-named</artifactId>
+      <version>$version</version>
+      <scope>system</scope>
+      <systemPath>$maven_client</systemPath>
+    </dependency>
+EOF
+
+  index=0
+  while IFS= read -r library; do
+    printf '    <dependency>\n'
+    printf '      <groupId>dev.gaius.minecraft.library</groupId>\n'
+    printf '      <artifactId>library-%03d</artifactId>\n' "$index"
+    printf '      <version>1</version>\n'
+    printf '      <scope>system</scope>\n'
+    printf '      <systemPath>%s</systemPath>\n' "$library"
+    printf '    </dependency>\n'
+    index=$((index + 1))
+  done < <(
+      jq -r '
+        .libraries[]
+        | (.name | split(":")) as $coordinates
+        | select(
+            ($coordinates | length) == 3
+            or (($coordinates | length) == 4
+                and $coordinates[0] == "org.lwjgl"
+                and $coordinates[1] == "lwjgl"
+                and $coordinates[3] == "unsafe"))
+        | .downloads.artifact.path
+      ' "$metadata" |
+      tr -d '\r' |
+      while IFS= read -r path; do
+        for excluded_prefix in "${excluded_library_prefix_list[@]}"; do
+          if [[ -n "$excluded_prefix" && "$path" == "$excluded_prefix"* ]]; then
+            continue 2
+          fi
+        done
+        if [[ "$path" == ca/weblite/java-objc-bridge/* ||
+              "$path" == net/java/dev/jna/jna/* ||
+              "$path" == net/java/dev/jna/jna-platform/* ]]; then
+          continue
+        fi
+        patched="$overlay_directory/libraries/$path"
+        if [[ -f "$patched" ]]; then
+        printf '%s\n' "$(maven_path "$patched")"
+      else
+          printf '%s\n' "$(maven_path "$work/libraries/$path")"
+        fi
+      done
+  )
+
+  cat <<EOF
+  </dependencies>
+
+  <build>
+    <sourceDirectory>$maven_source_directory</sourceDirectory>
+    <resources>
+      <resource>
+        <directory>$maven_source_resources</directory>
+      </resource>
+      <resource>
+        <directory>$maven_resource_directory</directory>
+      </resource>
+    </resources>
+    <directory>$maven_maven_directory</directory>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.14.1</version>
+        <configuration>
+          <release>21</release>
+          <proc>none</proc>
+$compiler_source_excludes
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.teavm</groupId>
+        <artifactId>teavm-maven-plugin</artifactId>
+        <version>\${teavm.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>dev.gaius.teavm</groupId>
+            <artifactId>teavm-core-browser-patch</artifactId>
+            <version>0.1.0</version>
+            <scope>system</scope>
+            <systemPath>$maven_teavm_core_patch</systemPath>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <id>compile-minecraft-client</id>
+            <phase>package</phase>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+            <configuration>
+              <mainClass>$main_class</mainClass>
+              <targetDirectory>$maven_target_directory</targetDirectory>
+              <targetFileName>$target_file</targetFileName>
+              <optimizationLevel>$optimization_level</optimizationLevel>
+              <sourceMapsGenerated>$source_maps_generated</sourceMapsGenerated>
+              <debugInformationGenerated>$debug_information_generated</debugInformationGenerated>
+              <minifying>$minifying</minifying>
+              <shortFileNames>$short_file_names</shortFileNames>
+              <assertionsRemoved>$assertions_removed</assertionsRemoved>
+              <stopOnErrors>true</stopOnErrors>
+              <maxTopLevelNames>10000</maxTopLevelNames>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+EOF
+} >"$output"
+
+echo "$output"
