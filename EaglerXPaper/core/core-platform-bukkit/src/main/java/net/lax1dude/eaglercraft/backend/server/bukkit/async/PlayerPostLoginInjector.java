@@ -807,17 +807,24 @@ public class PlayerPostLoginInjector {
 
     private static GameProfile createGameProfile(UUID uuid, String name, GameProfile original) throws Exception {
         Object properties = AuthlibCompat.getProperties(original);
+        Constructor<?> twoArgConstructor = null;
         for (Constructor<?> ctor : GameProfile.class.getConstructors()) {
             Class<?>[] params = ctor.getParameterTypes();
-            if (params.length == 2 && params[0] == UUID.class && params[1] == String.class) {
-                GameProfile replacement = (GameProfile)ctor.newInstance(uuid, name);
-                AuthlibCompat.getProperties(replacement).putAll(AuthlibCompat.getProperties(original));
-                return replacement;
-            }
             if (params.length == 3 && params[0] == UUID.class && params[1] == String.class
-                    && params[2].isInstance(properties)) {
+                    && properties != null && params[2].isInstance(properties)) {
                 return (GameProfile)ctor.newInstance(uuid, name, properties);
             }
+            if (params.length == 2 && params[0] == UUID.class && params[1] == String.class) {
+                twoArgConstructor = ctor;
+            }
+        }
+        if (twoArgConstructor != null) {
+            GameProfile replacement = (GameProfile)twoArgConstructor.newInstance(uuid, name);
+            if (properties == null || AuthlibCompat.getProperties(replacement) == null) {
+                throw new IllegalStateException("Authlib properties are unavailable");
+            }
+            AuthlibCompat.getProperties(replacement).putAll(AuthlibCompat.getProperties(original));
+            return replacement;
         }
         throw new NoSuchMethodException("No compatible GameProfile constructor found");
     }
