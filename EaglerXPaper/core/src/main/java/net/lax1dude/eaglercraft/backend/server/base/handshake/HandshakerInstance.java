@@ -454,11 +454,9 @@ public abstract class HandshakerInstance implements IHandshaker {
 				sendPacketDenyLogin(ctx, obj).addListener(ChannelFutureListener.CLOSE);
 			} else if (response == IEaglercraftAuthPasswordEvent.EnumAuthResponse.ALLOW) {
 				pipelineData.username = evt.getProfileUsername();
-				if (server.getPlatform().getType() != EnumAdapterPlatformType.BUKKIT) {
-					UUID evtUUID = evt.getProfileUUID();
-					if (evtUUID != null) {
-						pipelineData.uuid = evtUUID;
-					}
+				UUID evtUUID = evt.getProfileUUID();
+				if (evtUUID != null) {
+					pipelineData.uuid = evtUUID;
 				}
 				pipelineData.requestedServer = evt.getAuthRequestedServer();
 				handleContinueLogin(ctx);
