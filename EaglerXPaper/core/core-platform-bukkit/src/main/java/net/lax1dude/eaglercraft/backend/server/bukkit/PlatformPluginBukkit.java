@@ -117,6 +117,7 @@ import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitUnsafe;
 import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitWorld;
 import net.lax1dude.eaglercraft.backend.server.bukkit.async.PlayerPostLoginInjector;
 import net.lax1dude.eaglercraft.backend.server.bukkit.event.BukkitEventDispatchAdapter;
+import net.lax1dude.eaglercraft.backend.server.bukkit.event.AuthMeEaglerAuthListener;
 import net.lax1dude.eaglercraft.backend.server.bungee.chat.BungeeComponentHelper;
 import net.lax1dude.eaglercraft.backend.server.config.EnumConfigFormat;
 import net.md_5.bungee.api.chat.BaseComponent;
@@ -135,7 +136,7 @@ import org.bukkit.plugin.messaging.Messenger;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.scheduler.BukkitTask;
 
-@Plugin(name="EaglercraftXServer", version="1.1.1 Stable 1", description="Official EaglercraftX plugin for Spigot and Paper servers", spigot=@Plugin.Spigot(authors={"lax1dude"}, website="https://lax1dude.net/eaglerxserver", prefix="EaglerXServer"), dependencies={@Dependency(name="SkinsRestorer", type=DependencyType.SOFTDEPEND)})
+@Plugin(name="EaglercraftXServer", version="1.1.1 Stable 1", description="Official EaglercraftX plugin for Spigot and Paper servers", spigot=@Plugin.Spigot(authors={"lax1dude"}, website="https://lax1dude.net/eaglerxserver", prefix="EaglerXServer"), dependencies={@Dependency(name="SkinsRestorer", type=DependencyType.SOFTDEPEND), @Dependency(name="AuthMe", type=DependencyType.SOFTDEPEND)})
 public class PlatformPluginBukkit
 extends JavaPlugin
 implements IPlatform<Player> {
@@ -290,6 +291,7 @@ implements IPlatform<Player> {
         }
         Server server = this.getServer();
         server.getPluginManager().registerEvents((Listener)new BukkitListener(this), (org.bukkit.plugin.Plugin)this);
+        server.getPluginManager().registerEvents((Listener)new AuthMeEaglerAuthListener(this), (org.bukkit.plugin.Plugin)this);
         CommandMap cmdMap = BukkitUnsafe.getCommandMap(server);
         for (IEaglerXServerCommandType<Player> cmd : this.commandsList) {
             server.getPluginManager().addPermission(new Permission(cmd.getPermission(), PermissionDefault.OP));
