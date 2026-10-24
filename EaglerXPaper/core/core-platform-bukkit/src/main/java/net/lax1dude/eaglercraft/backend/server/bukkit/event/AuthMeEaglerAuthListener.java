@@ -10,12 +10,17 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.Plugin;
 
 import net.lax1dude.eaglercraft.backend.server.api.bukkit.event.EaglercraftAuthCheckRequiredEvent;
@@ -23,6 +28,9 @@ import net.lax1dude.eaglercraft.backend.server.api.bukkit.event.EaglercraftAuthP
 import net.lax1dude.eaglercraft.backend.server.api.event.IEaglercraftAuthCheckRequiredEvent;
 import net.lax1dude.eaglercraft.backend.server.api.event.IEaglercraftAuthPasswordEvent;
 import net.lax1dude.eaglercraft.backend.server.bukkit.PlatformPluginBukkit;
+import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitUnsafe;
+import net.lax1dude.eaglercraft.backend.server.adapter.PipelineAttributes;
+import net.lax1dude.eaglercraft.backend.server.base.NettyPipelineData;
 
 /**
  * Optional AuthMe bridge for EaglerXPaper's authentication events.
@@ -37,6 +45,7 @@ public final class AuthMeEaglerAuthListener implements Listener {
     private static final Pattern NAME_PATTERN = Pattern.compile("\"name\"\\s*:\\s*\"([A-Za-z0-9_]{3,16})\"");
 
     private final PlatformPluginBukkit plugin;
+    private final ConcurrentMap<String, Long> authenticatedNames = new ConcurrentHashMap<>();
 
     public AuthMeEaglerAuthListener(PlatformPluginBukkit plugin) {
         this.plugin = plugin;
@@ -101,12 +110,53 @@ public final class AuthMeEaglerAuthListener implements Listener {
 
             event.setProfileUsername(premiumProfile.name);
             event.setProfileUUID(premiumProfile.uuid);
+            authenticatedNames.put(premiumProfile.name.toLowerCase(Locale.ROOT), System.currentTimeMillis());
             event.setLoginAllowed();
         } catch (Exception ex) {
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
             plugin.getLogger().warning("AuthMe Eagler authentication failed for " + username
                     + " (" + cause.getClass().getSimpleName() + ").");
             event.setLoginDenied("Authentication service unavailable. Please try again.");
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        String key = player.getName().toLowerCase(Locale.ROOT);
+        Long authenticatedAt = authenticatedNames.remove(key);
+        if (authenticatedAt == null || System.currentTimeMillis() - authenticatedAt > 30000L
+                || !isEaglerPlayer(player)) {
+            return;
+        }
+
+        // Let AuthMe's normal join handler initialize its login state first,
+        // then tell AuthMe this player already passed its password API check.
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline() || !isEaglerPlayer(player) || !isAuthMeAvailable()) {
+                return;
+            }
+            try {
+                Object api = getAuthMeApi();
+                if (api == null) {
+                    return;
+                }
+                api.getClass().getMethod("forceLogin", Player.class).invoke(api, player);
+            } catch (Exception ex) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                plugin.getLogger().warning("Could not complete AuthMe login for Eagler player "
+                        + player.getName() + " (" + cause.getClass().getSimpleName() + ").");
+            }
+        });
+    }
+
+    private boolean isEaglerPlayer(Player player) {
+        try {
+            NettyPipelineData data = BukkitUnsafe.getPlayerChannel(player)
+                    .attr(PipelineAttributes.<NettyPipelineData>pipelineData()).get();
+            return data != null && data.isEaglerPlayer();
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
