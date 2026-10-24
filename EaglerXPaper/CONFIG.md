@@ -61,7 +61,7 @@ Generated from the source code of EaglerXServer 1.1.1
 
 ## <small>`/settings.cfg` &gt; `enable_authentication_events`&emsp;<sub>(Bukkit, BungeeCord, Velocity)</sub></small>
 **Summary:**
-- Default value is false, if the events for hooking into the EaglercraftX client's authentication system and cookie system should be enabled&emsp;<sub>(Bukkit, BungeeCord, Velocity)</sub>
+- Default value is false. Set to true to enable EaglercraftX authentication/cookie events. On Bukkit, the built-in AuthMe bridge requires this setting to be true and accepts passwords only over WSS; AuthMe must be installed and the Eagler username must resolve to a premium Minecraft profile. If no handler makes an explicit decision, authentication is denied.&emsp;<sub>(Bukkit, BungeeCord, Velocity)</sub>
 
 **Defaults:**
 - `false`&emsp;<sub>(Bukkit, BungeeCord, Velocity)</sub>
