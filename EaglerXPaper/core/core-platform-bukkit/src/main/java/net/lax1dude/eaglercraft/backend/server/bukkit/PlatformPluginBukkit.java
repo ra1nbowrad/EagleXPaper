@@ -117,6 +117,7 @@ import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitUnsafe;
 import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitWorld;
 import net.lax1dude.eaglercraft.backend.server.bukkit.async.PlayerPostLoginInjector;
 import net.lax1dude.eaglercraft.backend.server.bukkit.event.BukkitEventDispatchAdapter;
+import net.lax1dude.eaglercraft.backend.server.bukkit.event.AuthMeEaglerAuthListener;
 import net.lax1dude.eaglercraft.backend.server.bungee.chat.BungeeComponentHelper;
 import net.lax1dude.eaglercraft.backend.server.config.EnumConfigFormat;
 import net.md_5.bungee.api.chat.BaseComponent;
@@ -290,6 +291,7 @@ implements IPlatform<Player> {
         }
         Server server = this.getServer();
         server.getPluginManager().registerEvents((Listener)new BukkitListener(this), (org.bukkit.plugin.Plugin)this);
+        server.getPluginManager().registerEvents((Listener)new AuthMeEaglerAuthListener(this), (org.bukkit.plugin.Plugin)this);
         CommandMap cmdMap = BukkitUnsafe.getCommandMap(server);
         for (IEaglerXServerCommandType<Player> cmd : this.commandsList) {
             server.getPluginManager().addPermission(new Permission(cmd.getPermission(), PermissionDefault.OP));
