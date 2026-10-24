@@ -144,15 +144,19 @@ public abstract class HandshakerInstance implements IHandshaker {
 			server.eventDispatcher().dispatchAuthCheckRequired(pipelineData.asPendingConnection(),
 					pipelineData.handshakeAuthEnabled, pipelineData.handshakeAuthUsername,
 					inEventLoop(ctx.channel(), (evt, err) -> {
-				if (err == null) {
-					IEaglercraftAuthCheckRequiredEvent.EnumAuthResponse response = evt.getAuthRequired();
-					if (response == null) {
-						state = HandshakePacketTypes.STATE_CLIENT_VERSION;
-						inboundHandler.canSendV3Kick = true;
-						sendPacketVersionNoAuth(ctx, pipelineData.handshakeProtocol,
-								pipelineData.minecraftProtocol, server.getServerBrand(),
-								server.getServerVersion());
-					} else {
+				if (err != null || evt == null) {
+					state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+					inboundHandler.terminateInternalError(ctx, getVersion());
+					pipelineData.connectionLogger.error("Caught exception dispatching auth required check event", err);
+					return;
+				}
+				IEaglercraftAuthCheckRequiredEvent.EnumAuthResponse response = evt.getAuthRequired();
+				if (response == null) {
+					// Authentication events are enabled, so a missing decision must not silently disable auth.
+					state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+					inboundHandler.terminateErrorCode(ctx, getVersion(),
+							HandshakePacketTypes.SERVER_ERROR_CUSTOM_MESSAGE, "Authentication is not configured");
+				} else {
 						pipelineData.nicknameSelectionEnabled = evt.isNicknameSelectionEnabled();
 						pipelineData.cookieAuthEventEnabled = evt.getEnableCookieAuth();
 						pipelineData.authType = evt.getUseAuthTypeRaw();
@@ -204,12 +208,6 @@ public abstract class HandshakerInstance implements IHandshaker {
 							break;
 						}
 					}
-				} else {
-					state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
-					inboundHandler.terminateInternalError(ctx, getVersion());
-					pipelineData.connectionLogger
-							.error("Caught exception dispatching auth required check event", err);
-				}
 			}));
 		} else {
 			state = HandshakePacketTypes.STATE_CLIENT_VERSION;
@@ -442,10 +440,18 @@ public abstract class HandshakerInstance implements IHandshaker {
 				authPassword, pipelineData.cookieEnabled, pipelineData.cookieData, requestedUsername,
 				pipelineData.username, pipelineData.uuid, pipelineData.authType, pipelineData.authMessage,
 				pipelineData.requestedServer, inEventLoop(ctx.channel(), (evt, err) -> {
+			if (err != null || evt == null) {
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				inboundHandler.terminateInternalError(ctx, getVersion());
+				pipelineData.connectionLogger.error("Caught exception dispatching auth password event", err);
+				return;
+			}
 			IEaglercraftAuthPasswordEvent.EnumAuthResponse response = evt.getAuthResponse();
 			if (response == null) {
-				pipelineData.requestedServer = "";
-				handleContinueLogin(ctx);
+				// Authentication is enabled: an unanswered event must never grant access.
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				Object obj = server.componentBuilder().buildTranslationComponent().translation("disconnect.closed").end();
+				sendPacketDenyLogin(ctx, obj).addListener(ChannelFutureListener.CLOSE);
 			} else if (response == IEaglercraftAuthPasswordEvent.EnumAuthResponse.ALLOW) {
 				pipelineData.username = evt.getProfileUsername();
 				if (server.getPlatform().getType() != EnumAdapterPlatformType.BUKKIT) {
@@ -475,10 +481,18 @@ public abstract class HandshakerInstance implements IHandshaker {
 				pipelineData.cookieData, requestedUsername, pipelineData.username, pipelineData.uuid,
 				pipelineData.authType, pipelineData.authMessage, pipelineData.requestedServer,
 				inEventLoop(ctx.channel(), (evt, err) -> {
+			if (err != null || evt == null) {
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				inboundHandler.terminateInternalError(ctx, getVersion());
+				pipelineData.connectionLogger.error("Caught exception dispatching auth cookie event", err);
+				return;
+			}
 			IEaglercraftAuthCookieEvent.EnumAuthResponse response = evt.getAuthResponse();
 			if (response == null) {
-				pipelineData.username = requestedUsername;
-				handleContinueLogin(ctx);
+				// Authentication is enabled: an unanswered event must never grant access.
+				state = HandshakePacketTypes.STATE_CLIENT_COMPLETE;
+				Object obj = server.componentBuilder().buildTranslationComponent().translation("disconnect.closed").end();
+				sendPacketDenyLogin(ctx, obj).addListener(ChannelFutureListener.CLOSE);
 				return;
 			}
 			switch (response) {
