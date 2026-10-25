@@ -80,6 +80,8 @@ IPipelineData {
     public String eaglerBrandString;
     public String eaglerVersionString;
     public boolean wss;
+    /** True only when the configured forwarding secret authenticates the dedicated WSS proxy header. */
+    public boolean trustedProxyWss;
     public String headerHost;
     public String headerOrigin;
     public String headerUserAgent;
@@ -187,7 +189,7 @@ IPipelineData {
 
     @Override
     public boolean isWebSocketSecure() {
-        return this.wss;
+        return this.wss || this.trustedProxyWss;
     }
 
     @Override
