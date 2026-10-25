@@ -635,7 +635,7 @@ Generated from the source code of EaglerXServer 1.1.1
 
 ## <small>`/listener.cfg` &gt; `forward_secret_header`&emsp;<sub>(Bukkit)</sub></small>
 **Summary:**
-- Default value is 'X-Eagler-Secret', sets the name of the request header that contains the secret if the forward_secret option is enabled.&emsp;<sub>(Bukkit)</sub>
+- Default value is 'X-Eagler-Secret', sets the name of the request header that contains the secret if the forward_secret option is enabled. For the Cloudflare Worker AuthMe/WSS bridge, set this to `X-Eagler-Proxy-WSS`; a valid secret on this dedicated header is treated as an assertion that the trusted proxy accepted the client over HTTPS/WSS. The proxy must reject non-HTTPS requests and the secret must be kept private.&emsp;<sub>(Bukkit)</sub>
 
 **Defaults:**
 - `"X-Eagler-Secret"`&emsp;<sub>(Bukkit)</sub>
