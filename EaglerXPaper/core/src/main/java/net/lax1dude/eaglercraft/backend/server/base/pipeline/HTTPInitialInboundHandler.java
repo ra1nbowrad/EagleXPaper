@@ -128,6 +128,12 @@ extends ChannelInboundHandlerAdapter {
                         }
                     }
                     if (HTTPMessageUtils.containsValue(headers, "connection", "upgrade", true) && HTTPMessageUtils.containsValue(headers, "upgrade", "websocket", false)) {
+                        // The dedicated header is accepted as a WSS assertion only after the
+                        // listener has validated its configured forwarding secret above. The
+                        // trusted proxy must independently reject non-HTTPS client requests.
+                        if (conf.isForwardSecret() && "X-Eagler-Proxy-WSS".equalsIgnoreCase(conf.getForwardSecretHeader())) {
+                            pipelineData.trustedProxyWss = true;
+                        }
                         pipelineData.initStall = true;
                         this.handleWebSocket(ctx, pipelineData, msg);
                         return;
